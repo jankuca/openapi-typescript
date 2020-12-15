@@ -46,6 +46,7 @@ export default function generateTypesV3(input: OpenAPI3 | OpenAPI3Schemas, optio
   }
 
   const operations: Record<string, OpenAPI3Operation> = {};
+  const externalFileKeys = new Set();
 
   // propertyMapper
   const propertyMapped = options ? propertyMapper(components.schemas, options.propertyMapper) : components.schemas;
@@ -54,7 +55,7 @@ export default function generateTypesV3(input: OpenAPI3 | OpenAPI3Schemas, optio
   function transform(node: OpenAPI3SchemaObject): string {
     switch (nodeType(node)) {
       case "ref": {
-        return transformRef(node.$ref, rawSchema ? "schemas/" : "");
+        return transformRefType(node.$ref, rawSchema ? "schemas/" : "");
       }
       case "string":
       case "number":
@@ -255,6 +256,42 @@ export default function generateTypesV3(input: OpenAPI3 | OpenAPI3Schemas, optio
     return output;
   }
 
+  function transformRefType(ref: string, root = "") {
+    const isExternalRef = !ref.startsWith("#");
+    if (isExternalRef) {
+      const [relativePath, internalPath] = ref.split("#/");
+      const fileKey = relativePath.replace(/\.json$/, "");
+      externalFileKeys.add(fileKey);
+
+      if (internalPath) {
+        const parts = internalPath.split("/");
+        return `external["${fileKey}"]["${parts.join('"]["')}"]`;
+      } else {
+        return `external["${fileKey}"]`;
+      }
+    }
+
+    return transformRef(ref, root);
+  }
+
+  function createExternalFileMapping() {
+    if (externalFileKeys.size === 0) return "";
+
+    const imports = [...externalFileKeys].map((fileKey, index) => {
+      return "import { schemas as external$" + index + ' } from "./' + fileKey + '"';
+    });
+
+    const importMappings = [
+      "export type external = {",
+      ...[...externalFileKeys].map((fileKey, index) => {
+        return '"' + fileKey + '": external$' + index;
+      }),
+      "}",
+    ];
+
+    return imports.join("\n") + "\n\n" + importMappings.join("\n") + "\n\n";
+  }
+
   if (rawSchema) {
     return `export interface schemas {
   ${createKeys(propertyMapped, Object.keys(propertyMapped))}
@@ -304,6 +341,9 @@ responses: {
 
   // close components wrapper
   finalOutput += "\n}";
+
+  // add collected external imports if any
+  finalOutput = createExternalFileMapping() + finalOutput;
 
   return finalOutput;
 }
